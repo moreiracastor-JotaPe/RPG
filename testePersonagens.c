@@ -59,6 +59,8 @@ bool addPilha(PilhaPtr pilha, NodePtr perso){
     // Atualizando o topo;
     pilha->topo = aux;
     
+    pilha->tmnh++;
+    
     return true;
 }
 
@@ -67,18 +69,32 @@ bool removerItem(PilhaPtr p){
     if(auxNode == NULL){
         return false;
     }
+    
+    auxNode = p->topo;
+    p->topo = auxNode->dir;
+    
+    free(auxNode);
+    
+    p->tmnh--;
+    
+    return true;
 }
 
 bool exibirPilha(PilhaPtr p){
-    if(p->topo == NULL){
-        puts("Sem Itens na Pilha.");
-        return false;
-    }
+    NodePtr temp = p->topo;
     
-    PilhaPtr auxP = (PilhaPtr)malloc(sizeof(Pilha));
-    if(auxP == NULL){
-        puts("ERRO em Alocar Memória em Exibir.");
-        return false;
+    printf("Topo (%d)\n", p->tmnh);
+    printf(" |\n");
+    
+    while (temp != NULL) {
+        printf("Hp: [%d]\n", temp->hp);
+        printf("Vigor: [%d]\n", temp->vigor);
+        printf("Ataque: [%d]\n", temp->ataque);
+        printf("Defesa: [%d]\n", temp->defesa);
+        if(temp->dir != NULL) {
+            printf(" |\n");
+        }
+        temp = temp->dir;
     }
     
     return true;
@@ -86,6 +102,23 @@ bool exibirPilha(PilhaPtr p){
 
 int main(){
     puts("Olá mundo!");
+    
+    NodePtr persona1 = criar(10, 20, 10, 10);
+    NodePtr persona2 = criar(30, 10, 15, 2);
+    PilhaPtr p = (PilhaPtr)malloc(sizeof(Pilha));
+    
+    addPilha(p, persona1);
+    addPilha(p, persona2);
+    
+    printf("---------- Monstros ----------\n");
+    exibirPilha(p);
+    printf("------------------------------\n");
+    
+    removerItem(p);
+    
+    printf("---------- Monstros ----------\n");
+    exibirPilha(p);
+    printf("------------------------------\n");
     
     return 0;
 }
