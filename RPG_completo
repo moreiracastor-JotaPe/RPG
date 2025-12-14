@@ -1,0 +1,782 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <conio.h>
+
+#ifdef _WIN32
+    #include <windows.h>
+    #define LIMPAR "cls"
+    void esperarTempo(int ms) { Sleep(ms); }
+#else
+    #include <unistd.h>
+    #define LIMPAR "clear"
+    void esperarTempo(int ms) { usleep(ms * 1000); }
+#endif
+
+// ==========================================
+// 1. ESTRUTURAS
+// ==========================================
+
+typedef struct {
+    char nome[50];
+    int vida;
+    int vidaMaxima;
+    int ataque;
+    int defesa;
+} Personagem;
+
+typedef struct NoHeroi {
+    Personagem p;
+    struct NoHeroi *prox;
+    struct NoHeroi *ant;
+} NoHeroi;
+
+typedef struct {
+    char nome[50];
+    int vida;
+    int vidaMaxima;
+    int ataque;
+    int defesa;
+    int id;
+} Inimigo;
+
+typedef struct NoInimigo {
+    Inimigo i;
+    struct NoInimigo *prox;
+} NoInimigo;
+
+typedef enum { ATAQUE = 1, DEFESA, CURA } TipoAcao;
+
+typedef struct {
+    TipoAcao tipo;
+    Personagem *quemFaz;
+    struct NoInimigo *alvoEspecifico;
+} DadosAcao;
+
+typedef struct NoPilha {
+    DadosAcao dados;
+    struct NoPilha *prox;
+} NoPilha;
+
+typedef struct {
+    NoPilha *topo;
+    int tamanho;
+} PilhaAcoes;
+
+typedef struct NoFase {
+    NoInimigo *listaInimigos;
+    struct NoFase *prox;
+} NoFase;
+
+typedef struct {
+    NoFase *topo;
+    int qtdFases;
+} PilhaFases;
+
+// ==========================================
+// 2. FUNÇÕES DE SUPORTE E NARRATIVA
+// ==========================================
+
+void limparTela() {
+    system(LIMPAR);
+}
+
+void esperarEnter() {
+    printf("\n[Pressione ENTER para continuar...]");
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
+// Efeito de máquina de escrever para a história
+void narrar(char *texto) {
+    limparTela();
+    printf("=======================================================\n");
+
+    int pular = 0; // Flag para saber se o jogador quer pular
+
+    for (int i = 0; texto[i] != '\0'; i++) {
+        printf("%c", texto[i]);
+        fflush(stdout);
+
+        // Se ainda não mandou pular, verifica o teclado
+        if (!pular) {
+            // _kbhit() retorna verdadeiro se uma tecla foi pressionada
+            if (_kbhit()) {
+                char tecla = _getch(); // Lê a tecla sem travar
+                if (tecla == 13) {     // 13 é o código ASCII do ENTER
+                    pular = 1;         // Ativa o modo turbo
+                }
+            }
+        }
+
+        // Se NÃO estiver pulando, aplica a pausa dramática.
+        // Se estiver pulando, o delay vira 0 e o texto sai instantaneo.
+        if (!pular) {
+            if(texto[i] == '.' || texto[i] == '!' || texto[i] == '?')
+                esperarTempo(600);
+            else if(texto[i] == ',')
+                esperarTempo(300);
+            else
+                esperarTempo(30);
+        }
+    }
+
+    printf("\n=======================================================\n");
+
+    // Pequena limpeza de buffer caso o usuário tenha apertado Enter muitas vezes
+    while(_kbhit()) _getch();
+
+    esperarEnter();
+}
+NoHeroi* buscarNoDoPersonagem(NoHeroi *lista, Personagem *p) {
+    if (lista == NULL) return NULL;
+    NoHeroi *atual = lista;
+    do {
+        if (&atual->p == p) return atual;
+        atual = atual->prox;
+    } while (atual != lista);
+    return NULL;
+}
+
+// ==========================================
+// 3. GERENCIAMENTO DE LISTAS E PILHAS
+// ==========================================
+
+// --- INIMIGOS ---
+void adicionarInimigo(NoInimigo **lista, char *nome, int hp, int atk, int def, int id) {
+    NoInimigo *novo = (NoInimigo*) malloc(sizeof(NoInimigo));
+    strcpy(novo->i.nome, nome);
+    novo->i.vida = hp;
+    novo->i.vidaMaxima = hp;
+    novo->i.ataque = atk;
+    novo->i.defesa = def;
+    novo->i.id = id;
+    novo->prox = NULL;
+    if (*lista == NULL) *lista = novo;
+    else {
+        NoInimigo *atual = *lista;
+        while (atual->prox != NULL) atual = atual->prox;
+        atual->prox = novo;
+    }
+}
+
+void removerInimigo(NoInimigo **lista, NoInimigo *alvo) {
+    if (*lista == NULL || alvo == NULL) return;
+    NoInimigo *atual = *lista;
+    NoInimigo *anterior = NULL;
+    while (atual != NULL && atual != alvo) { anterior = atual; atual = atual->prox; }
+    if (atual == NULL) return;
+    if (anterior == NULL) *lista = atual->prox;
+    else anterior->prox = atual->prox;
+    free(atual);
+}
+
+// --- PILHA DE AÇÕES ---
+void inicializarPilhaAcoes(PilhaAcoes *p) { p->topo = NULL; p->tamanho = 0; }
+
+void empilharAcao(PilhaAcoes *p, TipoAcao tipo, Personagem *heroi, NoInimigo *alvo) {
+    NoPilha *novo = (NoPilha*) malloc(sizeof(NoPilha));
+    novo->dados.tipo = tipo;
+    novo->dados.quemFaz = heroi;
+    novo->dados.alvoEspecifico = alvo;
+    novo->prox = p->topo;
+    p->topo = novo;
+    p->tamanho++;
+}
+
+DadosAcao desempilharAcao(PilhaAcoes *p) {
+    DadosAcao d = {(TipoAcao)-1, NULL, NULL};
+    if (p->topo == NULL) return d;
+    NoPilha *temp = p->topo;
+    d = temp->dados;
+    p->topo = temp->prox;
+    free(temp);
+    p->tamanho--;
+    return d;
+}
+
+// --- PILHA DE FASES ---
+void inicializarPilhaFases(PilhaFases *p) { p->topo = NULL; p->qtdFases = 0; }
+
+void empilharFase(PilhaFases *p, NoInimigo *listaInimigos) {
+    NoFase *novo = (NoFase*) malloc(sizeof(NoFase));
+    novo->listaInimigos = listaInimigos;
+    novo->prox = p->topo;
+    p->topo = novo;
+    p->qtdFases++;
+}
+
+NoInimigo* desempilharFase(PilhaFases *p) {
+    if (p->topo == NULL) return NULL;
+    NoFase *temp = p->topo;
+    NoInimigo *lista = temp->listaInimigos;
+    p->topo = temp->prox;
+    free(temp);
+    p->qtdFases--;
+    return lista;
+}
+
+// --- HERÓIS ---
+void adicionarHeroi(NoHeroi **lista, Personagem p) {
+    NoHeroi *novo = (NoHeroi*) malloc(sizeof(NoHeroi));
+    novo->p = p;
+    if (*lista == NULL) {
+        novo->prox = novo; novo->ant = novo; *lista = novo;
+    } else {
+        NoHeroi *ultimo = (*lista)->ant;
+        novo->prox = *lista; novo->ant = ultimo;
+        ultimo->prox = novo; (*lista)->ant = novo;
+    }
+}
+
+int removerHeroi(NoHeroi **lista, NoHeroi *alvo) {
+    if (*lista == NULL || alvo == NULL) return 1;
+    if (alvo->prox == alvo) { *lista = NULL; free(alvo); return 1; }
+    NoHeroi *ant = alvo->ant; NoHeroi *prox = alvo->prox;
+    ant->prox = prox; prox->ant = ant;
+    if (*lista == alvo) *lista = prox;
+    free(alvo); return 0;
+}
+
+// ==========================================
+// 4. LÓGICA DE COMBATE
+// ==========================================
+
+void mostrarCampoDeBatalha(NoHeroi *herois, NoInimigo *inimigos) {
+    printf("\n==============================================\n");
+    printf(" --- INIMIGOS ---\n");
+    if (inimigos == NULL) printf(" (Silencio...)\n");
+    else {
+        NoInimigo *mob = inimigos;
+        int i = 1;
+        while (mob != NULL) {
+            char status[20] = "";
+            if(mob->i.vida <= 0) strcpy(status, "[MORTO]");
+            printf(" [%d] %-15s HP: %3d/%-3d ATQ: %2d %s\n",
+                   i, mob->i.nome, (mob->i.vida < 0 ? 0 : mob->i.vida),
+                   mob->i.vidaMaxima, mob->i.ataque, status);
+            mob = mob->prox; i++;
+        }
+    }
+    printf("----------------------------------------------\n");
+    printf(" --- SUA EQUIPE ---\n");
+    if (herois != NULL) {
+        NoHeroi *h = herois;
+        do {
+            char status[20] = "";
+            if(h->p.vida <= 0) strcpy(status, "[MORTO]");
+            printf("  > %-15s HP: %3d/%-3d DEF: %2d %s\n", h->p.nome,
+                   (h->p.vida < 0 ? 0 : h->p.vida), h->p.vidaMaxima, h->p.defesa, status);
+            h = h->prox;
+        } while (h != herois);
+    }
+    printf("==============================================\n");
+}
+
+int calcularDano(int ataque, int defesa) {
+    int chance = rand() % 5;
+    int base = ataque - (defesa / 2);
+    if (base < 1) base = 1;
+    int dano = base + (rand() % 4);
+    if (chance == 0) {
+        dano *= 2;
+        printf("   (CRITICO!) ");
+    }
+    return dano;
+}
+
+NoInimigo* selecionarAlvo(NoInimigo *lista, int indice) {
+    NoInimigo *atual = lista;
+    int cont = 1;
+    while(atual != NULL) {
+        if(cont == indice) return atual;
+        atual = atual->prox; cont++;
+    }
+    return lista;
+}
+
+int temInimigosVivos(NoInimigo *lista) {
+    while(lista != NULL) {
+        if(lista->i.vida > 0) return 1;
+        lista = lista->prox;
+    }
+    return 0;
+}
+
+void limparCorposInimigos(NoInimigo **lista) {
+    NoInimigo *atual = *lista;
+    while(atual != NULL) {
+        NoInimigo *prox = atual->prox;
+        if(atual->i.vida <= 0) {
+            printf("   (X) %s caiu!\n", atual->i.nome);
+            removerInimigo(lista, atual);
+        }
+        atual = prox;
+    }
+}
+
+int limparCorposHerois(NoHeroi **lista) {
+    if (*lista == NULL) return 1;
+    NoHeroi *atual = *lista;
+    NoHeroi *proxNode;
+    int totalVivos = 0;
+    if(atual != NULL) {
+        do { if(atual->p.vida > 0) totalVivos++; atual = atual->prox; } while(atual != *lista);
+    }
+    if (totalVivos == 0) return 1;
+    int deuVolta = 0;
+    atual = *lista;
+    do {
+        proxNode = atual->prox;
+        if (atual->p.vida <= 0) {
+            removerHeroi(lista, atual);
+            atual = proxNode;
+            if(*lista == NULL) return 1;
+        } else {
+            atual = proxNode;
+        }
+        if (atual == *lista) deuVolta = 1;
+    } while (!deuVolta);
+    return 0;
+}
+
+int batalhaFase(NoHeroi **herois, NoInimigo **inimigos) {
+    PilhaAcoes pilha;
+    inicializarPilhaAcoes(&pilha);
+    int turno = 1;
+    Personagem* buffados[10];
+    int valoresBuff[10];
+    int qtdBuffados = 0;
+
+    while (*herois != NULL && temInimigosVivos(*inimigos)) {
+        limparTela();
+        mostrarCampoDeBatalha(*herois, *inimigos);
+        printf("\n=== TURNO %d ===\n", turno);
+
+        // 1. ESCOLHA
+        NoHeroi *hAtual = *herois;
+        if (hAtual != NULL) {
+            do {
+                if (hAtual->p.vida <= 0) { hAtual = hAtual->prox; continue; }
+                int acao = 0;
+                int entradaValida = 0;
+                while(!entradaValida) {
+                    printf("\n>> %s (HP:%d)\n[1] Atacar | [2] Defender | [3] Curar: ", hAtual->p.nome, hAtual->p.vida);
+                    int leu = scanf("%d", &acao);
+                    while(getchar()!='\n');
+                    if(leu == 1 && acao >= 1 && acao <= 3) entradaValida = 1;
+                    else printf(" (!) Opcao invalida.\n");
+                }
+                NoInimigo *alvoEscolhido = NULL;
+                if (acao == 1) {
+                    int idxAlvo = 0;
+                    int alvoValido = 0;
+                    while(!alvoValido) {
+                        printf("Numero do alvo: ");
+                        int leuAlvo = scanf("%d", &idxAlvo);
+                        while(getchar()!='\n');
+                        if(leuAlvo == 1 && idxAlvo > 0) alvoValido = 1;
+                        else printf(" (!) Alvo invalido.\n");
+                    }
+                    alvoEscolhido = selecionarAlvo(*inimigos, idxAlvo);
+                }
+                empilharAcao(&pilha, (TipoAcao)acao, &hAtual->p, alvoEscolhido);
+                hAtual = hAtual->prox;
+            } while (hAtual != *herois);
+        }
+
+        // 2. RESOLUÇÃO
+        limparTela();
+        mostrarCampoDeBatalha(*herois, *inimigos);
+        printf("\n=== RESOLVENDO AÇÕES ===\n");
+        qtdBuffados = 0;
+
+        while(pilha.topo != NULL) {
+            if(!temInimigosVivos(*inimigos)) break;
+            DadosAcao d = desempilharAcao(&pilha);
+            Personagem *agente = d.quemFaz;
+            if(agente->vida <= 0) continue;
+
+            printf("\n> %s: ", agente->nome);
+            if(d.tipo == ATAQUE) {
+                NoInimigo *mob = d.alvoEspecifico;
+                if(mob == NULL || mob->i.vida <= 0) {
+                    mob = *inimigos;
+                    while(mob != NULL && mob->i.vida <= 0) mob = mob->prox;
+                }
+                if(mob != NULL) {
+                    int dano = calcularDano(agente->ataque, mob->i.defesa);
+                    mob->i.vida -= dano;
+                    printf("ATAQUE em %s (-%d HP)\n", mob->i.nome, dano);
+                }
+            } else if (d.tipo == DEFESA) {
+                agente->vida += 10;
+                if(agente->vida > agente->vidaMaxima) agente->vida = agente->vidaMaxima;
+                NoHeroi *noAgente = buscarNoDoPersonagem(*herois, agente);
+                if(noAgente != NULL) {
+                    Personagem *aliadoEsq = &noAgente->ant->p;
+                    if(aliadoEsq->vida > 0 && aliadoEsq != agente) {
+                        int bonusDefesa = agente->defesa / 2;
+                        if (bonusDefesa < 1) bonusDefesa = 1;
+                        aliadoEsq->defesa += bonusDefesa;
+                        if(qtdBuffados < 10) {
+                            buffados[qtdBuffados] = aliadoEsq;
+                            valoresBuff[qtdBuffados] = bonusDefesa;
+                            qtdBuffados++;
+                        }
+                        printf("DEFESA! +10HP e protegeu %s (+%d DEF)\n", aliadoEsq->nome, bonusDefesa);
+                    } else {
+                        printf("DEFESA! +10 HP\n");
+                    }
+                }
+            } else {
+                agente->vida += 30;
+                if(agente->vida > agente->vidaMaxima) agente->vida = agente->vidaMaxima;
+                printf("CURA (+30 HP)\n");
+            }
+        }
+
+        // 3. INIMIGOS
+        // --- 3. CONTRA-ATAQUE INIMIGO (CORRIGIDO: ALVOS ALEATÓRIOS) ---
+        if(temInimigosVivos(*inimigos)) {
+            printf("\n--- CONTRA-ATAQUE INIMIGO ---\n");
+            NoInimigo *mob = *inimigos;
+
+            while(mob != NULL) {
+                if(mob->i.vida > 0) {
+
+                    // PASSO 1: Sorteia um herói inicial para focar
+                    // (Isso evita que todos olhem para o mesmo lider)
+                    NoHeroi *alvoFocado = *herois;
+                    int roleta = rand() % 10; // Gira a roleta
+                    for(int k=0; k < roleta; k++) {
+                        alvoFocado = alvoFocado->prox;
+                    }
+
+                    // PASSO 2: Aplica a lógica do Flanco (Ataca a Direita do Focado)
+                    NoHeroi *alvoReal = alvoFocado->prox;
+
+                    // PASSO 3: Garante que o alvo esteja vivo
+                    // Se o alvo da direita estiver morto, procura o próximo vivo
+                    // (A trava 'cnt' evita loop infinito se todos morrerem)
+                    int cnt = 0;
+                    while(alvoReal->p.vida <= 0 && cnt < 5) {
+                        alvoReal = alvoReal->prox;
+                        cnt++;
+                    }
+
+                    if(alvoReal->p.vida > 0) {
+                        printf("<!> %s ataca %s!\n", mob->i.nome, alvoReal->p.nome);
+
+                        // Cálculo de dano
+                        int dm = calcularDano(mob->i.ataque, alvoReal->p.defesa);
+                        alvoReal->p.vida -= dm;
+                        printf("    Dano: %d (Defesa: %d)\n", dm, alvoReal->p.defesa);
+                    }
+                }
+                mob = mob->prox;
+            }
+        }
+
+        for(int i = 0; i < qtdBuffados; i++) { buffados[i]->defesa -= valoresBuff[i]; }
+
+        printf("\n[Fim do Turno] Enter para continuar...\n");
+        limparCorposInimigos(inimigos);
+        if(limparCorposHerois(herois)) return 0;
+        if(!temInimigosVivos(*inimigos)) {
+            printf("\n*** VITORIA NA FASE ***\n");
+            getchar(); return 1;
+        }
+        getchar();
+        turno++;
+    }
+    return 0;
+}
+
+void curarGrupo(NoHeroi *grupo) {
+    if(!grupo) return;
+    limparTela();
+    NoHeroi *h = grupo;
+    printf("\n=== MOMENTO DE DESCANSO ===\n");
+    do {
+        if(h->p.vida > 0) {
+            int curaCalculada = (h->p.vidaMaxima * 30) / 100;
+            if (curaCalculada < 10) curaCalculada = 10;
+            int vidaAntiga = h->p.vida;
+            h->p.vida += curaCalculada;
+            if(h->p.vida > h->p.vidaMaxima) h->p.vida = h->p.vidaMaxima;
+            int recuperadoReal = h->p.vida - vidaAntiga;
+            printf(" > %-15s: %3d -> %3d (+%d)\n", h->p.nome, vidaAntiga, h->p.vida, recuperadoReal);
+        }
+        h = h->prox;
+    } while(h != grupo);
+    printf("\nPressione ENTER para seguir viagem...");
+    int c; while ((c = getchar()) != '\n' && c != EOF);
+}
+
+// ==========================================
+// 5. MENUS COM HISTÓRIA E LORE
+// ==========================================
+
+void exibirTabelaHerois() {
+    limparTela();
+    printf("===================================================\n");
+    printf("              OS PRISIONEIROS DO ACASO             \n");
+    printf("===================================================\n\n");
+
+    // [cite: 2, 17] Brasa
+    printf("1. BRASA (O Elemental Frustrado)\n");
+    printf("   [Mago/DPS] | HP: 100 | ATK: 60 | DEF: 05\n");
+    printf("   HISTORIA: Um elemental de fogo cansado de ser porteiro.\n");
+    printf("   Seguiu um grito na floresta e acabou neste limbo.\n");
+    printf("   Odeia tédio e lugares fechados.\n\n");
+
+    // [cite: 4, 22] Alarico
+    printf("2. ALARICO (O Fantasma Curandeiro)\n");
+    printf("   [Suporte]  | HP: 100 | ATK: 30 | DEF: 10\n");
+    printf("   HISTORIA: Cientista genial que morreu em uma explosao\n");
+    printf("   tentando criar a 'Panaceia Universal'.\n\n");
+
+    // [cite: 7, 8] Rufus
+    printf("3. RUFUS (O Lobisomem Malandro)\n");
+    printf("   [Agil]     | HP: 120 | ATK: 45 | DEF: 10\n");
+    printf("   HISTORIA: Tentou vender bijuteria para um anjo e foi\n");
+    printf("   banido. Prefere a labia do que as garras.\n\n");
+
+    // [cite: 10, 11] Truk
+    printf("4. TRUK (O Goblin Gentil)\n");
+    printf("   [Tank]     | HP: 200 | ATK: 25 | DEF: 25\n");
+    printf("   HISTORIA: Goblin maromba com coracao de ouro.\n");
+    printf("   Busca redencao apos ser enganado por um general cruel.\n");
+
+    printf("\n===================================================\n");
+    esperarEnter();
+}
+
+void exibirTabelaInimigos() {
+    limparTela();
+    printf("===================================================\n");
+    printf("             GUARDIÕES DOS QUATRO DESAFIOS         \n");
+    printf("===================================================\n");
+    printf("| %-20s | %-6s | %-6s | %-6s |\n", "CRIATURA", "HP", "ATQ", "DEF");
+    printf("|----------------------|--------|--------|--------|\n");
+    printf("| [1] IMPERADOR NOITE  |   250  |   30   |   10   |\n");
+    printf("| [2] RAINHA ENXAME    |   300  |   40   |   15   |\n");
+    printf("| [3] BOITATA MAGMATICO|   400  |   50   |   20   |\n");
+    printf("| [4] DRAGAO TREVAS    |   600  |   70   |   25   |\n");
+    printf("===================================================\n");
+    esperarEnter();
+}
+
+void exibirManual() {
+    // --- PÁGINA 1: A Lógica da Pilha ---
+    limparTela();
+    printf("=======================================================\n");
+    printf("            MANUAL: O SISTEMA DE BATALHA               \n");
+    printf("=======================================================\n\n");
+
+    printf("[1] A ORDEM DO CAOS (SISTEMA DE PILHA)\n");
+    printf("    Diferente de outros RPGs, aqui a ordem das ações eh definida\n");
+    printf("    pela ordem de decisao inversa (LIFO - Last In, First Out).\n\n");
+
+    printf("    COMO FUNCIONA:\n");
+    printf("    Imagine que cada heroi coloca sua carta de acao em uma mesa.\n");
+    printf("    1. Rufus coloca sua carta na mesa (Base).\n");
+    printf("    2. alarinco coloca sua carta por cima (Meio).\n");
+    printf("    3. Brasa coloca sua carta no topo (Topo).\n\n");
+
+    printf("    NA HORA DE RESOLVER (Tirando do Topo):\n");
+    printf("    > 1o A AGIR: Rufus (Ultimo a escolher, age rapido!)\n");
+    printf("    > 2o A AGIR: alarinco\n");
+    printf("    > 3o A AGIR: Brasa (O primeiro a escolher e o mais lento)\n\n");
+
+    printf("    DICA: Se Rufus esta morrendo, faca o ultimo heroi usar\n");
+    printf("    uma acao que mate o monstro antes que chegue a vez de Rufus!\n");
+
+    printf("\n-------------------------------------------------------\n");
+    printf("[Pressione ENTER para ver sobre Habilidades...]");
+
+    // Pequena pausa para ler a próxima página
+    int c; while ((c = getchar()) != '\n' && c != EOF);
+
+    // --- PÁGINA 2: Ações e Posicionamento ---
+    limparTela();
+    printf("=======================================================\n");
+    printf("            MANUAL: HABILIDADES & POSICOES             \n");
+    printf("=======================================================\n\n");
+
+    printf("[2] MECANICA DE DEFESA (O ESCUDO COMPARTILHADO)\n");
+    printf("    Defender nao eh egoismo! Eh protecao em cadeia.\n");
+    printf("    Ao usar [2] DEFENDER:\n");
+    printf("    - Voce recupera +10 HP.\n");
+    printf("    - Voce projeta um escudo no aliado a sua ESQUERDA (ant).\n");
+    printf("    - VALOR DO ESCUDO: O aliado ganha 50%% da SUA Defesa.\n");
+    printf("      (Ex: Se Arthur tem 20 DEF, o Mago ganha +10 DEF extra\n");
+    printf("           durante o proximo turno dos inimigos turno).\n\n");
+    printf("[3] ATAQUE & CURA\n");
+    printf("    > ATACAR: Dano = Seu Ataque - Defesa do Inimigo.\n");
+    printf("      (Existe chance de Critico que dobra o dano).\n");
+    printf("    > CURAR: Recupera +30 HP para si mesmo.\n\n");
+
+    printf("[4] INTELIGENCIA INIMIGA (FLANCOS)\n");
+    printf("    Se os inimigos sobreviverem a sua pilha de acoes, eles revidam.\n");
+    printf("    Eles buscam atacar o 'Flanco Direito' (seu aliado a direita).\n");
+    printf("    Posicione seus herois mais resistentes a direita para 'tankar'!\n");
+
+    esperarEnter();
+}
+
+// ==========================================
+// 6. CAMPANHA COM NARRATIVA (STORYTELLING)
+// ==========================================
+
+void iniciarCampanha() {
+    PilhaFases masmorra;
+    inicializarPilhaFases(&masmorra);
+
+    // --- SETUP INIMIGOS (LIFO - O ÚLTIMO INSERIDO É O PRIMEIRO A APARECER) ---
+    // A ordem de empilhar deve ser inversa à ordem das fases (4 -> 3 -> 2 -> 1)
+
+    // FASE 4 (Fundo da Pilha): O ABISMO [cite: 77, 96]
+    NoInimigo *fase4 = NULL;
+    adicionarInimigo(&fase4, "DRAGAO DAS TREVAS", 600, 70, 25, 1);
+    adicionarInimigo(&fase4, "Mimico de Brasa", 150, 40, 5, 2); // [cite: 84]
+    adicionarInimigo(&fase4, "Mimico de Truk", 200, 30, 20, 3); // [cite: 92]
+    empilharFase(&masmorra, fase4);
+
+    // FASE 3: ÁGUAS DO BOITATÁ [cite: 64, 69]
+    NoInimigo *fase3 = NULL;
+    adicionarInimigo(&fase3, "BOITATA MAGMATICO", 400, 50, 20, 1);
+    adicionarInimigo(&fase3, "Enguia Eletrica A", 100, 25, 5, 2); // [cite: 68]
+    adicionarInimigo(&fase3, "Enguia Eletrica B", 100, 25, 5, 3);
+    empilharFase(&masmorra, fase3);
+
+    // FASE 2: COLMEIA CELESTIAL [cite: 52, 57]
+    NoInimigo *fase2 = NULL;
+    adicionarInimigo(&fase2, "RAINHA DO ENXAME", 300, 40, 15, 1);
+    adicionarInimigo(&fase2, "Vespa de Cristal", 120, 30, 10, 2); // [cite: 54]
+    empilharFase(&masmorra, fase2);
+
+    // FASE 1 (Topo da Pilha): CAVERNA SÔNICA [cite: 37, 44]
+    NoInimigo *fase1 = NULL;
+    adicionarInimigo(&fase1, "IMPERADOR NOITE", 250, 30, 10, 1);
+    adicionarInimigo(&fase1, "Morcego Mutante A", 80, 15, 0, 2); // [cite: 40]
+    adicionarInimigo(&fase1, "Morcego Mutante B", 80, 15, 0, 3);
+    empilharFase(&masmorra, fase1);
+
+    // --- SETUP GRUPO (OS 4 HERÓIS) ---
+    NoHeroi *grupo = NULL;
+    // Truk (Tank), Brasa (Mago), Rufus (Agil), Alarico (Suporte)
+    // [cite: 10, 2, 7, 4]
+    adicionarHeroi(&grupo, (Personagem){"Truk (Goblin)", 200, 200, 25, 25});
+    adicionarHeroi(&grupo, (Personagem){"Brasa (Elem)", 100, 100, 60, 5});
+    adicionarHeroi(&grupo, (Personagem){"Rufus (Lobo)", 120, 120, 45, 10});
+    adicionarHeroi(&grupo, (Personagem){"Alarico (Fant)", 100, 100, 30, 10});
+
+    // --- INTRODUÇÃO DA HISTÓRIA ---
+    // [cite: 13, 15, 20, 36]
+    narrar("O mundo girou e estabilizou em um clarão cinzento.\n"
+           "Brasa rugiu: 'Duzentos anos guardando a porta para isso?!'.\n"
+           "Alarico ajustou os oculos: 'Densidade magica curiosa...'.\n"
+           "Rufus tentou barganhar e Truk pediu desculpas.\n"
+           "Uma voz ecoou: 'Derrotem os quatro guardioes para voltar'.");
+
+    int nivel = 1;
+    while(masmorra.topo != NULL) {
+        NoInimigo *mobsDaFase = desempilharFase(&masmorra);
+
+        // NARRATIVA ENTRE FASES
+        if (nivel == 1) {
+            // [cite: 37, 39]
+            narrar("DESAFIO 1: A CAVERNA DOS ECOS SONICOS.\n"
+                   "O cheiro de enxofre eh insuportavel.\n"
+                   "Brasa reclama: 'Detesto lugares fechados'.\n"
+                   "Olhos vermelhos brilham no teto...");
+        }
+        else if (nivel == 2) {
+            // [cite: 53, 54]
+            narrar("O cenario muda para galhos de uma Arvore Celestial.\n"
+                   "Vespas de cristal do tamanho de caes surgem zumbindo.\n"
+                   "DESAFIO 2: A COLMEIA CELESTIAL.");
+        }
+        else if (nivel == 3) {
+            // [cite: 65, 69]
+            narrar("Voces caem em um rio de aguas rasas e neblina.\n"
+                   "Enguias eletricas nadam ao redor.\n"
+                   "Uma serpente de fogo magmatico se ergue!\n"
+                   "DESAFIO 3: AS AGUAS DO BOITATA.");
+        }
+        else if (nivel == 4) {
+            //
+            narrar("A arena final eh uma plataforma no vacuo.\n"
+                   "Sombras surgem, imitando as insegurancas dos herois.\n"
+                   "O Dragao das Trevas desce dos ceus!\n"
+                   "DESAFIO FINAL: O ABISMO.");
+        }
+
+        limparTela();
+        printf("Prepare-se para o ANDAR %d!\n", nivel);
+        getchar();
+
+        int venceu = batalhaFase(&grupo, &mobsDaFase);
+
+        if(!venceu) {
+            narrar("A uniao falhou. Os herois permanecerao no esquecimento...\n"
+                   "(GAME OVER)"); // [cite: 36]
+            break;
+        }
+
+        if(masmorra.topo != NULL) {
+            curarGrupo(grupo);
+            nivel++;
+        } else {
+            // FINAL DA HISTÓRIA
+            // [cite: 111, 116, 118, 119, 122]
+            narrar("O Dragao explode em luz. Quatro portais se abrem.\n"
+                   "Brasa retorna como Capitao da Guarda.\n"
+                   "Alarico corrige sua formula e sobrevive.\n"
+                   "Rufus torna-se honesto e Truk protege orfaos.\n"
+                   "A lenda dos Quatro Desafios vivera para sempre.\n"
+                   "PARABENS! VOCE COMPLETOU O JOGO!");
+        }
+    }
+
+    if(grupo) {
+        NoHeroi *atual = grupo;
+        grupo->ant->prox = NULL;
+        while(atual != NULL) { NoHeroi *tmp = atual->prox; free(atual); atual = tmp; }
+    }
+    while(masmorra.topo != NULL) desempilharFase(&masmorra);
+}
+
+int main() {
+    srand(time(NULL));
+    int opcao = 0;
+    do {
+        limparTela();
+        printf("########################################\n");
+        printf("#     RPG: A MASMORRA DOS 4 DESAFIOS   #\n");
+        printf("########################################\n");
+        printf("#  1. INICIAR A JORNADA                #\n");
+        printf("#  2. CONHECER OS HEROIS               #\n");
+        printf("#  3. BESTIARIO                        #\n");
+        printf("#  4. MANUAL                           #\n");
+        printf("#  5. SAIR                             #\n");
+        printf("########################################\n");
+        printf("\n>> Escolha: ");
+        int leu = scanf("%d", &opcao);
+        while(getchar() != '\n');
+        if (leu != 1) opcao = 0;
+
+        switch(opcao) {
+            case 1: iniciarCampanha(); break;
+            case 2: exibirTabelaHerois(); break;
+            case 3: exibirTabelaInimigos(); break;
+            case 4: exibirManual(); break;
+            case 5: printf("\nAte a proxima aventura...\n"); break;
+            default: printf("\nOpcao invalida!\n"); getchar(); break;
+        }
+    } while(opcao != 5);
+    return 0;
+}
